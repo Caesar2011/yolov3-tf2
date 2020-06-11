@@ -8,7 +8,7 @@ def transform_targets_for_output(y_true, grid_size, anchor_idxs):
 
     # y_true_out: (N, grid, grid, anchors, [x, y, w, h, obj, class])
     y_true_out = tf.zeros(
-        (N, grid_size, grid_size, tf.shape(anchor_idxs)[0], 6))
+        (N, grid_size[0], grid_size[1], tf.shape(anchor_idxs)[0], 6))
 
     anchor_idxs = tf.cast(anchor_idxs, tf.int32)
 
@@ -27,7 +27,7 @@ def transform_targets_for_output(y_true, grid_size, anchor_idxs):
                 box_xy = (y_true[i][j][0:2] + y_true[i][j][2:4]) / 2
 
                 anchor_idx = tf.cast(tf.where(anchor_eq), tf.int32)
-                grid_xy = tf.cast(box_xy // (1/grid_size), tf.int32)
+                grid_xy = tf.cast(box_xy // (1/grid_size[0], 1/grid_size[1]), tf.int32)
 
                 # grid[y][x][anchor] = (tx, ty, bw, bh, obj, class)
                 indexes = indexes.write(
@@ -44,8 +44,9 @@ def transform_targets_for_output(y_true, grid_size, anchor_idxs):
 
 
 def transform_targets(y_train, anchors, anchor_masks, size):
+    # size is a tuple (width, height)
     y_outs = []
-    grid_size = size // 32
+    grid_size = (size[0] // 32, size[1] // 32)
 
     # calculate anchor index for true boxes
     anchors = tf.cast(anchors, tf.float32)
@@ -65,13 +66,14 @@ def transform_targets(y_train, anchors, anchor_masks, size):
     for anchor_idxs in anchor_masks:
         y_outs.append(transform_targets_for_output(
             y_train, grid_size, anchor_idxs))
-        grid_size *= 2
+        grid_size = (grid_size[0]*2, grid_size[1]*2)
 
     return tuple(y_outs)
 
 
 def transform_images(x_train, size):
-    x_train = tf.image.resize(x_train, (size, size))
+    # size is a tuple (width, height)
+    x_train = tf.image.resize(x_train, size)
     x_train = x_train / 255
     return x_train
 
@@ -98,10 +100,13 @@ IMAGE_FEATURE_MAP = {
 }
 
 
-def parse_tfrecord(tfrecord, class_table, size):
+def parse_tfrecord(tfrecord, class_table, size=None):
+    # size is a tuple (width, height)
+    if size is None:
+        size = (416, 416)
     x = tf.io.parse_single_example(tfrecord, IMAGE_FEATURE_MAP)
     x_train = tf.image.decode_jpeg(x['image/encoded'], channels=3)
-    x_train = tf.image.resize(x_train, (size, size))
+    x_train = tf.image.resize(x_train, size)
 
     class_text = tf.sparse.to_dense(
         x['image/object/class/text'], default_value='')
@@ -118,7 +123,8 @@ def parse_tfrecord(tfrecord, class_table, size):
     return x_train, y_train
 
 
-def load_tfrecord_dataset(file_pattern, class_file, size=416):
+def load_tfrecord_dataset(file_pattern, class_file, size=None):
+    # size is a tuple (width, height)
     LINE_NUMBER = -1  # TODO: use tf.lookup.TextFileIndex.LINE_NUMBER
     class_table = tf.lookup.StaticHashTable(tf.lookup.TextFileInitializer(
         class_file, tf.string, 0, tf.int64, LINE_NUMBER, delimiter="\n"), -1)

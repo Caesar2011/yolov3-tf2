@@ -203,7 +203,9 @@ def yolo_nms(outputs, anchors, masks, classes):
 
 def YoloV3(size=None, channels=3, anchors=yolo_anchors,
            masks=yolo_anchor_masks, classes=80, training=False):
-    x = inputs = Input([size, size, channels], name='input')
+    if size is None:
+        size = (None, None)
+    x = inputs = Input([size[0], size[1], channels], name='input')
 
     x_36, x_61, x = Darknet(name='yolo_darknet')(x)
 
@@ -234,7 +236,9 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
 
 def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
                masks=yolo_tiny_anchor_masks, classes=80, training=False):
-    x = inputs = Input([size, size, channels], name='input')
+    if size is None:
+        size = (None, None)
+    x = inputs = Input([size[0], size[1], channels], name='input')
 
     x_8, x = DarknetTiny(name='yolo_darknet')(x)
 
@@ -276,8 +280,8 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
         box_loss_scale = 2 - true_wh[..., 0] * true_wh[..., 1]
 
         # 3. inverting the pred box equations
-        grid_size = tf.shape(y_true)[1]
-        grid = tf.meshgrid(tf.range(grid_size), tf.range(grid_size))
+        grid_size = tf.shape(y_true)[1:3]
+        grid = tf.meshgrid(tf.range(grid_size[1]), tf.range(grid_size[0]))
         grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)
         true_xy = true_xy * tf.cast(grid_size, tf.float32) - \
             tf.cast(grid, tf.float32)
