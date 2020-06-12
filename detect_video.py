@@ -70,7 +70,10 @@ def main(_argv):
         if img is None:
             logging.warning("Empty Frame")
             time.sleep(0.1)
-            continue
+            if not FLAGS.output:
+                continue
+            else:
+                break
 
         img_in = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img_in = tf.expand_dims(img_in, 0)
@@ -83,15 +86,18 @@ def main(_argv):
         times = times[-20:]
 
         img = draw_outputs(img, (boxes, scores, classes, nums), class_names)
-        img = cv2.putText(img, "Time: {:.2f}ms".format(sum(times)/len(times)*1000), (0, 30),
+        ms = sum(times)/len(times)*1000
+        img = cv2.putText(img, "Time: {:.2f}ms ({:d})".format(ms, int(1000/ms)), (0, 30),
                           cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 2)
         if FLAGS.output:
             out.write(img)
-        cv2.imshow('output', img)
-        if cv2.waitKey(1) == ord('q'):
-            break
+        else:
+            cv2.imshow('output', img)
+            if cv2.waitKey(1) == ord('q'):
+                break
 
-    cv2.destroyAllWindows()
+    if not FLAGS.output:
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
