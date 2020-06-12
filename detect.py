@@ -30,7 +30,7 @@ def main(_argv):
         FLAGS.height = FLAGS.size
     if FLAGS.width is None:
         FLAGS.width = FLAGS.size
-    size = (FLAGS.width, FLAGS.height)
+    size = (FLAGS.height, FLAGS.width)
 
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     for physical_device in physical_devices:
@@ -51,7 +51,7 @@ def main(_argv):
         dataset = load_tfrecord_dataset(
             FLAGS.tfrecord, FLAGS.classes, size)
         dataset = dataset.shuffle(512)
-        img_iter = next(iter(dataset.take(FLAGS.count)))
+        img_iter = iter(dataset.take(FLAGS.count))
     else:
         img_raw = tf.image.decode_image(
             open(FLAGS.image, 'rb').read(), channels=3)

@@ -59,7 +59,7 @@ def main(_argv):
         FLAGS.height = FLAGS.size
     if FLAGS.width is None:
         FLAGS.width = FLAGS.size
-    size = (FLAGS.width, FLAGS.height)
+    size = (FLAGS.height, FLAGS.width)
 
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     for physical_device in physical_devices:
@@ -88,10 +88,11 @@ def main(_argv):
     train_dataset = train_dataset.prefetch(
         buffer_size=tf.data.experimental.AUTOTUNE)
 
-    val_dataset = dataset.load_fake_dataset()
     if FLAGS.val_dataset:
         val_dataset = dataset.load_tfrecord_dataset(
             FLAGS.val_dataset, FLAGS.classes, size)
+    else:
+        val_dataset = dataset.load_fake_dataset()
     val_dataset = val_dataset.batch(FLAGS.batch_size)
     val_dataset = val_dataset.map(lambda x, y: (
         dataset.transform_images(x, size),

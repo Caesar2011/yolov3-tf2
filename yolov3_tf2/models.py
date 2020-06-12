@@ -164,7 +164,7 @@ def yolo_boxes(pred, anchors, classes):
     grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)  # [gx, gy, 1, 2]
 
     box_xy = (box_xy + tf.cast(grid, tf.float32)) / \
-        tf.cast(grid_size, tf.float32)
+        tf.cast((grid_size[1], grid_size[0]), tf.float32)
     box_wh = tf.exp(box_wh) * anchors
 
     box_x1y1 = box_xy - box_wh / 2
@@ -263,14 +263,14 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
 def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
     def yolo_loss(y_true, y_pred):
         # 1. transform all pred outputs
-        # y_pred: (batch_size, grid, grid, anchors, (x, y, w, h, obj, ...cls))
+        # y_pred: (batch_size, grid_y, grid_x, anchors, (x, y, w, h, obj, ...cls))
         pred_box, pred_obj, pred_class, pred_xywh = yolo_boxes(
             y_pred, anchors, classes)
         pred_xy = pred_xywh[..., 0:2]
         pred_wh = pred_xywh[..., 2:4]
 
         # 2. transform all true outputs
-        # y_true: (batch_size, grid, grid, anchors, (x1, y1, x2, y2, obj, cls))
+        # y_true: (batch_size, grid_y, grid_x, anchors, (x1, y1, x2, y2, obj, cls))
         true_box, true_obj, true_class_idx = tf.split(
             y_true, (4, 1, 1), axis=-1)
         true_xy = (true_box[..., 0:2] + true_box[..., 2:4]) / 2
@@ -283,7 +283,7 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
         grid_size = tf.shape(y_true)[1:3]
         grid = tf.meshgrid(tf.range(grid_size[1]), tf.range(grid_size[0]))
         grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)
-        true_xy = true_xy * tf.cast(grid_size, tf.float32) - \
+        true_xy = true_xy * tf.cast((grid_size[1], grid_size[0]), tf.float32) - \
             tf.cast(grid, tf.float32)
         true_wh = tf.math.log(true_wh / anchors)
         true_wh = tf.where(tf.math.is_inf(true_wh),

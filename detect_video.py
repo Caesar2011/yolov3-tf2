@@ -30,7 +30,7 @@ def main(_argv):
         FLAGS.height = FLAGS.size
     if FLAGS.width is None:
         FLAGS.width = FLAGS.size
-    size = (FLAGS.width, FLAGS.height)
+    size = (FLAGS.height, FLAGS.width)
 
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     for physical_device in physical_devices:
