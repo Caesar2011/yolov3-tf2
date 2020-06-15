@@ -187,7 +187,11 @@ def yolo_nms(outputs, anchors, masks, classes):
     confidence = tf.concat(c, axis=1)
     class_probs = tf.concat(t, axis=1)
 
-    scores = confidence * class_probs
+    if classes > 1:
+        scores = confidence * class_probs
+    else:
+        scores = confidence
+
     boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
         boxes=tf.reshape(bbox, (tf.shape(bbox)[0], -1, 1, 4)),
         scores=tf.reshape(

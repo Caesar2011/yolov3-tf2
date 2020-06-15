@@ -28,6 +28,7 @@ def transform_targets_for_output(y_true, grid_size, anchor_idxs):
 
                 anchor_idx = tf.cast(tf.where(anchor_eq), tf.int32)
                 grid_xy = tf.cast(box_xy * (grid_size[1], grid_size[0]), tf.int32)
+                grid_xy = tf.minimum(tf.maximum((0, 0), grid_xy), (grid_size[1]-1, grid_size[0]-1))
 
                 # grid[y][x][anchor] = (tx, ty, bw, bh, obj, class)
                 indexes = indexes.write(
@@ -96,7 +97,7 @@ IMAGE_FEATURE_MAP = {
     # 'image/object/class/label': tf.io.VarLenFeature(tf.int64),
     # 'image/object/difficult': tf.io.VarLenFeature(tf.int64),
     # 'image/object/truncated': tf.io.VarLenFeature(tf.int64),
-    # 'image/object/view': tf.io.VarLenFeature(tf.string),
+    'image/object/view': tf.io.VarLenFeature(tf.string),
 }
 
 
@@ -116,6 +117,14 @@ def parse_tfrecord(tfrecord, class_table, size=None):
                         tf.sparse.to_dense(x['image/object/bbox/xmax']),
                         tf.sparse.to_dense(x['image/object/bbox/ymax']),
                         labels], axis=1)
+
+    poses = tf.sparse.to_dense(
+        x['image/object/view'], default_value='')
+    specs = tf.stack([poses], axis=1)
+
+    y_train = tf.boolean_mask(y_train,
+        tf.equal(specs[:, 0], "Frontal")
+    )
 
     paddings = [[0, FLAGS.yolo_max_boxes - tf.shape(y_train)[0]], [0, 0]]
     y_train = tf.pad(y_train, paddings)

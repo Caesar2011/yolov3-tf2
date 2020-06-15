@@ -84,7 +84,8 @@ def main(_argv):
     train_dataset = train_dataset.batch(FLAGS.batch_size)
     train_dataset = train_dataset.map(lambda x, y: (
         dataset.transform_images(x, size),
-        dataset.transform_targets(y, anchors, anchor_masks, size)))
+        dataset.transform_targets(y, anchors, anchor_masks, size)
+    ))
     train_dataset = train_dataset.prefetch(
         buffer_size=tf.data.experimental.AUTOTUNE)
 
@@ -96,7 +97,8 @@ def main(_argv):
     val_dataset = val_dataset.batch(FLAGS.batch_size)
     val_dataset = val_dataset.map(lambda x, y: (
         dataset.transform_images(x, size),
-        dataset.transform_targets(y, anchors, anchor_masks, size)))
+        dataset.transform_targets(y, anchors, anchor_masks, size)
+    ))
 
     # Configure the model for transfer learning
     if FLAGS.transfer != 'none':
