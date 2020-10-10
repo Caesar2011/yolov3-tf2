@@ -14,6 +14,7 @@ flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
 flags.DEFINE_string('weights', './checkpoints/yolov3.tf',
                     'path to weights file')
 flags.DEFINE_boolean('tiny', False, 'yolov3 or yolov3-tiny')
+flags.DEFINE_boolean('recurrent', False, 'recurrent or not')
 flags.DEFINE_integer('size', 416, 'resize images to')
 flags.DEFINE_integer('height', None, 'resize image height to (overrides size)')
 flags.DEFINE_integer('width', None, 'resize image width to (overrides size)')
@@ -37,9 +38,9 @@ def main(_argv):
         tf.config.experimental.set_memory_growth(physical_device, True)
 
     if FLAGS.tiny:
-        yolo = YoloV3Tiny(classes=FLAGS.num_classes)
+        yolo = YoloV3Tiny(classes=FLAGS.num_classes, recurrent=FLAGS.recurrent)
     else:
-        yolo = YoloV3(classes=FLAGS.num_classes)
+        yolo = YoloV3(classes=FLAGS.num_classes, recurrent=FLAGS.recurrent)
 
     yolo.load_weights(FLAGS.weights)
     logging.info('weights loaded')
@@ -54,8 +55,6 @@ def main(_argv):
     except:
         vid = cv2.VideoCapture(FLAGS.video)
 
-    out = None
-
     if FLAGS.output:
         # by default VideoCapture returns float instead of int
         width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -63,6 +62,12 @@ def main(_argv):
         fps = int(vid.get(cv2.CAP_PROP_FPS))
         codec = cv2.VideoWriter_fourcc(*FLAGS.output_format)
         out = cv2.VideoWriter(FLAGS.output, codec, fps, (width, height))
+
+    if FLAGS.recurrent:
+        output_0 = tf.zeros((height // 32, width // 32, 3, 6))
+        output_1 = tf.zeros((height // 16, width // 16, 3, 6))
+        if not FLAGS.tiny:
+            output_2 = tf.zeros((height // 8, width // 8, 3, 6))
 
     while True:
         _, img = vid.read()
@@ -80,7 +85,13 @@ def main(_argv):
         img_in = transform_images(img_in, size)
 
         t1 = time.time()
-        boxes, scores, classes, nums = yolo.predict(img_in)
+        if FLAGS.recurrent:
+            if FLAGS.tiny:
+                ((boxes, scores, classes, nums), output_0, output_1) = yolo.predict(img_in, output_0, output_1)
+            else:
+                ((boxes, scores, classes, nums), output_0, output_1, output_2) = yolo.predict(img_in, output_0, output_1, output_2)
+        else:
+            boxes, scores, classes, nums = yolo.predict(img_in)
         t2 = time.time()
         times.append(t2-t1)
         times = times[-20:]
