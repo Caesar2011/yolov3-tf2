@@ -1,6 +1,7 @@
 from absl import app, flags, logging
 from absl.flags import FLAGS
-
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
 import numpy as np
 import cv2
@@ -21,6 +22,7 @@ import yolov3_tf2.dataset as dataset
 flags.DEFINE_string('dataset', '', 'path to dataset')
 flags.DEFINE_string('val_dataset', '', 'path to validation dataset')
 flags.DEFINE_boolean('tiny', False, 'yolov3 or yolov3-tiny')
+flags.DEFINE_boolean('recurrent', False, 'recurrent or not')
 flags.DEFINE_string('weights', './checkpoints/yolov3.tf',
                     'path to weights file')
 flags.DEFINE_string('classes', './data/coco.names', 'path to classes file')
@@ -29,18 +31,20 @@ flags.DEFINE_enum('mode', 'fit', ['fit', 'eager_fit', 'eager_tf'],
                   'eager_fit: model.fit(run_eagerly=True), '
                   'eager_tf: custom GradientTape')
 flags.DEFINE_enum('transfer', 'none',
-                  ['none', 'yolo_darknet', 'yolo_conv', 'yolo_output_conv', 'all'],
+                  ['none', 'yolo_darknet', 'yolo_conv', 'yolo_output_conv', 'yolo_output', 'all'],
                   'none: Training from scratch (no weights transfer), '
                   'yolo_darknet: Transfer darknet sub-model weights, '
                   'yolo_conv: Transfer darknet and conv sub-model weights, '
                   'yolo_output_conv: Transfer darknet and conv sub-model weights and first output conv layer weights, '
+                  'yolo_output: Transfer all weigths without recurrent, '
                   'all: Transfer all weights (pretrained weights need to have the same number of classes)')
 flags.DEFINE_enum('freeze', 'none',
-                  ['none', 'yolo_darknet', 'yolo_conv', 'yolo_output_conv', 'all'],
+                  ['none', 'yolo_darknet', 'yolo_conv', 'yolo_output_conv', 'yolo_output', 'all'],
                   'none: Tune all weights, '
                   'yolo_darknet: Tune all but darknet sub-model weights, '
                   'yolo_conv: Tune output sub-model weights, '
                   'yolo_output_conv: Tune only output sub-model without the first conv layer, '
+                  'yolo_output: Tune only recurrent module, '
                   'all: Do not allow tuning of weights')
 flags.DEFINE_integer('size', 416, 'image size')
 flags.DEFINE_integer('height', None, 'image height (overrides size)')
@@ -67,11 +71,11 @@ def main(_argv):
 
     if FLAGS.tiny:
         model = YoloV3Tiny(size, training=True,
-                           classes=FLAGS.num_classes)
+                           classes=FLAGS.num_classes, recurrent=FLAGS.recurrent)
         anchors = yolo_tiny_anchors
         anchor_masks = yolo_tiny_anchor_masks
     else:
-        model = YoloV3(size, training=True, classes=FLAGS.num_classes)
+        model = YoloV3(size, training=True, classes=FLAGS.num_classes, recurrent=FLAGS.recurrent)
         anchors = yolo_anchors
         anchor_masks = yolo_anchor_masks
 
@@ -80,11 +84,16 @@ def main(_argv):
             FLAGS.dataset, FLAGS.classes, size)
     else:
         train_dataset = dataset.load_fake_dataset()
-    train_dataset = train_dataset.shuffle(buffer_size=512)
+    train_dataset = train_dataset.shuffle(buffer_size=8)
     train_dataset = train_dataset.batch(FLAGS.batch_size)
     train_dataset = train_dataset.map(lambda x, y: (
         dataset.transform_images(x, size),
         dataset.transform_targets(y, anchors, anchor_masks, size)
+    ))
+    if FLAGS.recurrent:
+        train_dataset = train_dataset.map(lambda x, y: (
+            dataset.get_recurrect_inputs(x, y, anchors, anchor_masks, FLAGS.num_classes),
+            y
     ))
     train_dataset = train_dataset.prefetch(
         buffer_size=tf.data.experimental.AUTOTUNE)
@@ -99,6 +108,11 @@ def main(_argv):
         dataset.transform_images(x, size),
         dataset.transform_targets(y, anchors, anchor_masks, size)
     ))
+    if FLAGS.recurrent:
+        val_dataset = val_dataset.map(lambda x, y: (
+            dataset.get_recurrect_inputs(x, y, anchors, anchor_masks, FLAGS.num_classes),
+            y
+    ))
 
     # Configure the model for transfer learning
     if FLAGS.transfer != 'none':
@@ -110,33 +124,32 @@ def main(_argv):
         # create appropriate model_pretrained, load all weights and copy the ones we need
         else:
             if FLAGS.tiny:
-                model_pretrained = YoloV3Tiny(size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes)
+                model_pretrained = YoloV3Tiny(size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes, recurrent=FLAGS.recurrent)
             else:
-                model_pretrained = YoloV3(size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes)
+                model_pretrained = YoloV3(size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes, recurrent=FLAGS.recurrent)
             # load pretrained weights
             model_pretrained.load_weights(FLAGS.weights)
             # transfer darknet
             darknet = model.get_layer('yolo_darknet')
             darknet.set_weights(model_pretrained.get_layer('yolo_darknet').get_weights())
             # transfer 'yolo_conv_i' layer weights
-            if FLAGS.transfer in ['yolo_conv', 'yolo_output_conv']:
+            if FLAGS.transfer in ['yolo_conv', 'yolo_output_conv', 'yolo_output']:
                 for l in model.layers:
                    if l.name.startswith('yolo_conv'):
                        model.get_layer(l.name).set_weights(model_pretrained.get_layer(l.name).get_weights())
             # transfer 'yolo_output_i' first conv2d layer
             if FLAGS.transfer == 'yolo_output_conv':
                 # transfer tiny output conv2d
-                if FLAGS.tiny:
-                    # get and set the weights of the appropriate layers
-                    model.layers[4].layers[1].set_weights(model_pretrained.layers[4].layers[1].get_weights())
-                    model.layers[5].layers[1].set_weights(model_pretrained.layers[5].layers[1].get_weights())
-                    # should I freeze batch_norm as well?
-                else:
-                    # get and set the weights of the appropriate layers
-                    model.layers[5].layers[1].set_weights(model_pretrained.layers[5].layers[1].get_weights())
-                    model.layers[6].layers[1].set_weights(model_pretrained.layers[6].layers[1].get_weights())
-                    model.layers[7].layers[1].set_weights(model_pretrained.layers[7].layers[1].get_weights())
-                    # should I freeze batch_norm as well?
+                for l in model.layers:
+                   if l.name.startswith('yolo_output'):
+                        # get and set the weights of the appropriate layers
+                       model.get_layer(l.name).layers[1].set_weights(model_pretrained.get_layer(l.name).layers[1].get_weights())
+                        # should I freeze batch_norm as well?
+            # transfer 'yolo_output_i' layer weights
+            if FLAGS.transfer == 'yolo_output':
+                for l in model.layers:
+                   if l.name.startswith('yolo_output'):
+                       model.get_layer(l.name).set_weights(model_pretrained.get_layer(l.name).get_weights())
     # no transfer learning
     else:
         pass
@@ -145,10 +158,10 @@ def main(_argv):
     if FLAGS.freeze != 'none':
         if FLAGS.freeze == 'all':
             freeze_all(model)
-        if FLAGS.freeze in ['yolo_darknet' 'yolo_conv', 'yolo_output_conv']:
+        if FLAGS.freeze in ['yolo_darknet' 'yolo_conv', 'yolo_output_conv', 'yolo_output']:
             darknet = model.get_layer('yolo_darknet')
             freeze_all(darknet)
-        if FLAGS.freeze in ['yolo_conv', 'yolo_output_conv']:
+        if FLAGS.freeze in ['yolo_conv', 'yolo_output_conv', 'yolo_output']:
             for l in model.layers:
                 if l.name.startswith('yolo_conv'):
                     freeze_all(l)
@@ -162,6 +175,10 @@ def main(_argv):
                 freeze_all(model.layers[5].layers[1])
                 freeze_all(model.layers[6].layers[1])
                 freeze_all(model.layers[7].layers[1])
+        if FLAGS.transfer == 'yolo_output':
+            for l in model.layers:
+                if l.name.startswith('yolo_output'):
+                    freeze_all(l)
     # freeze nothing
     else:
         pass

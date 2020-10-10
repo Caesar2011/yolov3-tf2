@@ -14,12 +14,14 @@ from tensorflow.keras.layers import (
     UpSampling2D,
     ZeroPadding2D,
     BatchNormalization,
+    Dense
 )
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.losses import (
     binary_crossentropy,
     sparse_categorical_crossentropy
 )
+from tensorflow.python.keras import backend as K
 from .utils import broadcast_iou
 
 flags.DEFINE_integer('yolo_max_boxes', 100,
@@ -148,6 +150,36 @@ def YoloOutput(filters, anchors, classes, name=None):
     return yolo_output
 
 
+def YoloRecurrent(anchors, classes, name=None):
+    def yolo_recurrent(x_in):
+        inputs = Input(x_in[0].shape[1:]), Input(x_in[1].shape[1:])
+        pre_output, prev_output = inputs
+        filters = anchors * (classes + 5)
+
+        #tf.print("before", pre_output.shape, prev_output.shape)
+        pre_output = BatchNormalization()(pre_output)
+        prev_output = BatchNormalization()(prev_output)
+        prev_output = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2],
+                                            filters)))(prev_output)
+        pre_output = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2],
+                                            filters)))(pre_output)
+        #tf.print("after", pre_output.shape, prev_output.shape)
+        x = Lambda(lambda x: tf.concat(x, 3))((pre_output, prev_output))
+        #x = Lambda(lambda y: tf.stack(y, axis=-1))((pre_output, prev_output))
+        #tf.print("concat", x.shape)
+        #x = Dense(24)(x)
+        #x = BatchNormalization()(x)
+        #x = Dense(6)(x)
+        #x = Lambda(lambda y: tf.keras.backend.squeeze(y, axis=-1))(x)
+        x = YoloOutput(filters * 2, anchors, classes)(x)
+        #tf.print("output", x.shape)
+        #x = pre_output
+        #x = Dense(6)(x)
+
+        return Model(inputs, x, name=name)(x_in)
+    return yolo_recurrent
+
+
 def yolo_boxes(pred, anchors, classes):
     # pred: (batch_size, grid, grid, anchors, (x, y, w, h, obj, ...classes))
     grid_size = tf.shape(pred)[1:3]
@@ -206,7 +238,7 @@ def yolo_nms(outputs, anchors, masks, classes):
 
 
 def YoloV3(size=None, channels=3, anchors=yolo_anchors,
-           masks=yolo_anchor_masks, classes=80, training=False):
+           masks=yolo_anchor_masks, classes=80, training=False, recurrent=False):
     if size is None:
         size = (None, None)
     x = inputs = Input([size[0], size[1], channels], name='input')
@@ -214,13 +246,22 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
     x_36, x_61, x = Darknet(name='yolo_darknet')(x)
 
     x = YoloConv(512, name='yolo_conv_0')(x)
-    output_0 = YoloOutput(512, len(masks[0]), classes, name='yolo_output_0')(x)
+    pre_output_0 = output_0 = YoloOutput(512, len(masks[0]), classes, name='yolo_output_0')(x)
 
     x = YoloConv(256, name='yolo_conv_1')((x, x_61))
-    output_1 = YoloOutput(256, len(masks[1]), classes, name='yolo_output_1')(x)
+    pre_output_1 = output_1 = YoloOutput(256, len(masks[1]), classes, name='yolo_output_1')(x)
 
     x = YoloConv(128, name='yolo_conv_2')((x, x_36))
-    output_2 = YoloOutput(128, len(masks[2]), classes, name='yolo_output_2')(x)
+    pre_output_2 = output_2 = YoloOutput(128, len(masks[2]), classes, name='yolo_output_2')(x)
+
+    if recurrent:
+        prev_output_0 = Input([size[0]//32, size[1]//32, len(masks[0]), classes+5], name='input_prev_0')
+        output_0 = YoloRecurrent(64, len(masks[0]), classes, name='yolo_recurrent_0')((pre_output_0, prev_output_0))
+        prev_output_1 = Input([size[0]//16, size[1]//16, len(masks[1]), classes+5], name='input_prev_1')
+        output_1 = YoloRecurrent(64, len(masks[1]), classes, name='yolo_recurrent_1')((pre_output_1, prev_output_1))
+        prev_output_2 = Input([size[0]// 8, size[1]// 8, len(masks[2]), classes+5], name='input_prev_2')
+        output_2 = YoloRecurrent(64, len(masks[2]), classes, name='yolo_recurrent_2')((pre_output_2, prev_output_2))
+        inputs  = (inputs, prev_output_0, prev_output_1, prev_output_2)
 
     if training:
         return Model(inputs, (output_0, output_1, output_2), name='yolov3')
@@ -235,11 +276,14 @@ def YoloV3(size=None, channels=3, anchors=yolo_anchors,
     outputs = Lambda(lambda x: yolo_nms(x, anchors, masks, classes),
                      name='yolo_nms')((boxes_0[:3], boxes_1[:3], boxes_2[:3]))
 
+    if recurrent:
+        outputs = (outputs, output_0, output_1, output_2)
+
     return Model(inputs, outputs, name='yolov3')
 
 
 def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
-               masks=yolo_tiny_anchor_masks, classes=80, training=False):
+               masks=yolo_tiny_anchor_masks, classes=80, training=False, recurrent=False):
     if size is None:
         size = (None, None)
     x = inputs = Input([size[0], size[1], channels], name='input')
@@ -247,10 +291,17 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
     x_8, x = DarknetTiny(name='yolo_darknet')(x)
 
     x = YoloConvTiny(256, name='yolo_conv_0')(x)
-    output_0 = YoloOutput(256, len(masks[0]), classes, name='yolo_output_0')(x)
+    pre_output_0 = output_0 = YoloOutput(256, len(masks[0]), classes, name='yolo_output_0')(x)
 
     x = YoloConvTiny(128, name='yolo_conv_1')((x, x_8))
-    output_1 = YoloOutput(128, len(masks[1]), classes, name='yolo_output_1')(x)
+    pre_output_1 = output_1 = YoloOutput(128, len(masks[1]), classes, name='yolo_output_1')(x)
+
+    if recurrent:
+        prev_output_0 = Input([size[0]//32, size[1]//32, len(masks[0]), classes+5], name='input_prev_0')
+        output_0 = YoloRecurrent(len(masks[0]), classes, name='yolo_recurrent_0')((pre_output_0, prev_output_0))
+        prev_output_1 = Input([size[0]//16, size[1]//16, len(masks[1]), classes+5], name='input_prev_1')
+        output_1 = YoloRecurrent(len(masks[1]), classes, name='yolo_recurrent_1')((pre_output_1, prev_output_1))
+        inputs = (inputs, prev_output_0, prev_output_1)
 
     if training:
         return Model(inputs, (output_0, output_1), name='yolov3')
@@ -261,17 +312,23 @@ def YoloV3Tiny(size=None, channels=3, anchors=yolo_tiny_anchors,
                      name='yolo_boxes_1')(output_1)
     outputs = Lambda(lambda x: yolo_nms(x, anchors, masks, classes),
                      name='yolo_nms')((boxes_0[:3], boxes_1[:3]))
+
+    if recurrent:
+        outputs = (outputs, output_0, output_1)
+
     return Model(inputs, outputs, name='yolov3_tiny')
 
 
 def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
     def yolo_loss(y_true, y_pred):
+        #tf.print("true", y_true.shape)
         # 1. transform all pred outputs
         # y_pred: (batch_size, grid_y, grid_x, anchors, (x, y, w, h, obj, ...cls))
         pred_box, pred_obj, pred_class, pred_xywh = yolo_boxes(
             y_pred, anchors, classes)
         pred_xy = pred_xywh[..., 0:2]
         pred_wh = pred_xywh[..., 2:4]
+        #tf.print("before", y_pred[...][0, tf.random.uniform(shape=[], minval=0, maxval=16, dtype=tf.int64), tf.random.uniform(shape=[], minval=0, maxval=16, dtype=tf.int64), tf.random.uniform(shape=[], minval=0, maxval=3, dtype=tf.int64), :])
 
         # 2. transform all true outputs
         # y_true: (batch_size, grid_y, grid_x, anchors, (x1, y1, x2, y2, obj, cls))
@@ -295,6 +352,14 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
 
         # 4. calculate all masks
         obj_mask = tf.squeeze(true_obj, -1)
+        mask = tf.not_equal(obj_mask, 0)
+        not_mask = tf.logical_not(mask)
+        summarize = 20
+        #tf.print("a", pred_xy.shape)
+        #tf.print("b", obj_mask.shape)
+        #tf.print("c", mask.shape)
+        #tf.print("d", tf.boolean_mask(true_obj, mask), summarize=summarize)
+        #tf.print("e", tf.boolean_mask(pred_obj, mask), summarize=summarize)
         # ignore false positive when iou is over threshold
         best_iou = tf.map_fn(
             lambda x: tf.reduce_max(broadcast_iou(x[0], tf.boolean_mask(
@@ -308,9 +373,21 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
             tf.reduce_sum(tf.square(true_xy - pred_xy), axis=-1)
         wh_loss = obj_mask * box_loss_scale * \
             tf.reduce_sum(tf.square(true_wh - pred_wh), axis=-1)
+        #tf.print("losses 1", tf.math.reduce_sum(xy_loss))
+        #tf.print("losses 2", tf.math.reduce_sum(wh_loss))
+        #tf.print("true_obj shape", true_obj.shape, true_obj.dtype)
+        #tf.print("pred_obj shape", pred_obj.shape, pred_obj.dtype)
         obj_loss = binary_crossentropy(true_obj, pred_obj)
+        #tf.print("obj_loss shape", obj_loss.shape)
+        #tf.print("f", tf.boolean_mask(obj_loss, mask), summarize=summarize)
         obj_loss = obj_mask * obj_loss + \
             (1 - obj_mask) * ignore_mask * obj_loss
+        #tf.print("losses 3", tf.math.reduce_sum(obj_loss))
+        #tf.print("g", tf.boolean_mask(y_pred, mask), summarize=summarize)
+        #tf.print("h", tf.boolean_mask(y_pred, not_mask), summarize=summarize)
+        #tf.print("g_true", tf.boolean_mask(y_true, mask), summarize=summarize)
+        #tf.print("h_true", tf.boolean_mask(y_true, not_mask), summarize=summarize)
+        #tf.cond(tf.logical_or(tf.math.is_nan(tf.math.reduce_sum(obj_loss)), tf.math.is_inf(tf.math.reduce_sum(obj_loss))), lambda: [tf.print(y_pred), y_pred][-1], lambda: y_pred)
         # TODO: use binary_crossentropy instead
         class_loss = obj_mask * sparse_categorical_crossentropy(
             true_class_idx, pred_class)
@@ -320,6 +397,17 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
         wh_loss = tf.reduce_sum(wh_loss, axis=(1, 2, 3))
         obj_loss = tf.reduce_sum(obj_loss, axis=(1, 2, 3))
         class_loss = tf.reduce_sum(class_loss, axis=(1, 2, 3))
+
+        loss = xy_loss + wh_loss + obj_loss + class_loss
+        loss_mask = tf.logical_or(tf.math.is_nan(loss), tf.math.is_nan(loss))
+        #tf.print("xy_loss", tf.boolean_mask(xy_loss, loss_mask))
+        #tf.print("wh_loss", tf.boolean_mask(wh_loss, loss_mask))
+        #tf.print("obj_loss", tf.boolean_mask(obj_loss, loss_mask))
+        #tf.print("class_loss", tf.boolean_mask(class_loss, loss_mask))
+        #tf.print("loss", tf.boolean_mask(loss, loss_mask))
+        #tf.print("non entries", tf.boolean_mask(y_pred, loss_mask))
+        #tf.print("tru entries", tf.boolean_mask(y_true, loss_mask))
+        #tf.print("LOSS", xy_loss + wh_loss + obj_loss + class_loss)
 
         return xy_loss + wh_loss + obj_loss + class_loss
     return yolo_loss

@@ -1,5 +1,6 @@
 import tensorflow as tf
 from absl.flags import FLAGS
+import numpy as np
 
 @tf.function
 def transform_targets_for_output(y_true, grid_size, anchor_idxs):
@@ -77,6 +78,82 @@ def transform_images(x_train, size):
     x_train = tf.image.resize(x_train, size)
     x_train = x_train / 255
     return x_train
+
+def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
+    y2 = []
+
+    @tf.function
+    def inverse_sigmoid(x):
+        return -tf.math.log(1. / x - 1.)
+
+    @tf.function
+    def transform_xy(true_xy, y_elem_shape):
+        # 3a. inverting the pred box equations
+        grid_size = y_elem_shape[1:3]
+        grid = tf.meshgrid(tf.range(grid_size[1]), tf.range(grid_size[0]))
+        grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)
+        true_xy = true_xy * tf.cast((grid_size[1], grid_size[0]), tf.float32) - \
+            tf.cast(grid, tf.float32)
+        return true_xy
+
+    anchors_list = np.take(anchors_list, anchor_masks, axis=0)
+    idx = -1
+    for y_elem, anchors in zip(y, anchors_list):
+        idx += 1
+        anchors = tf.constant(anchors)
+        # 2. transform all true outputs
+        # y_elem: (batch_size, grid_y, grid_x, anchors, (x1, y1, x2, y2, obj, cls))
+        #tf.print(y_elem.shape)
+        true_box, true_obj, true_class_idx = tf.split(
+            y_elem, (4, 1, 1), axis=-1)
+        #tf.print(true_box.shape, true_obj.shape)
+        true_xy = (true_box[..., 0:2] + true_box[..., 2:4]) / 2
+        #tf.print("rev sig 0", true_xy)
+        true_wh = true_box[..., 2:4] - true_box[..., 0:2]
+
+        # 3b. inverting the pred box equations
+        true_wh = tf.math.log(true_wh / anchors)
+        true_wh = tf.where(tf.math.is_inf(true_wh),
+                           tf.ones_like(true_wh) * -20, true_wh)
+
+        condition = tf.math.greater(true_obj, 0)
+        shape = tf.shape(true_wh[..., 0])
+        normal_w = tf.random.normal(shape=shape, mean=-1.0, stddev=0.4)
+        normal_h = tf.random.normal(shape=shape, mean=6.55533592e-02, stddev=2.29207946e-01)
+        #tf.print("bool", tf.boolean_mask(true_wh, condition))
+        #tf.print("bool", true_wh)
+        true_wh = tf.where(condition, true_wh, tf.stack((normal_w, normal_h), axis=-1))
+
+        # Reverse sigmoid of yolo_boxes to be equal with pred_xy
+        normal_xy = tf.random.normal(shape=tf.shape(true_xy), mean=0.0, stddev=1.0)
+        true_xy = tf.where(condition, transform_xy(true_xy, tf.shape(y_elem)), normal_xy)
+        true_obj = tf.where(condition, tf.random.normal(shape=tf.shape(true_obj), mean=20.0, stddev=3.0), tf.random.normal(shape=tf.shape(true_obj), mean=-20.0, stddev=3.0))
+
+        classes_one_hot = tf.one_hot(tf.cast(true_class_idx, dtype=tf.int32), classes)
+        classes_one_hot = tf.squeeze(classes_one_hot, axis=-2)
+        if classes == 1:
+            classes_one_hot = classes_one_hot * 0.1
+        #tf.print(classes)
+        #tf.print("classes_one_hot", classes_one_hot.shape, classes_one_hot)
+        #tf.print("true_xy", tf.reduce_any(tf.math.is_nan(true_xy)), tf.reduce_any(tf.math.is_inf(true_xy)))
+        #tf.print("true_wh", tf.reduce_any(tf.math.is_nan(true_wh)), tf.reduce_any(tf.math.is_inf(true_wh)))
+        #tf.print("true_obj", tf.reduce_any(tf.math.is_nan(true_obj)), tf.reduce_any(tf.math.is_inf(true_obj)))
+        #tf.print("classes_one_hot", tf.reduce_any(tf.math.is_nan(classes_one_hot)), tf.reduce_any(tf.math.is_inf(classes_one_hot)))
+
+        # y_pred: (batch_size, grid_y, grid_x, anchors, (x, y, w, h, obj, ...cls))
+        y2.append(tf.concat((
+            true_xy,
+            true_wh,
+            true_obj,
+            classes_one_hot
+        ), axis=-1))
+        #tf.print("added", y2[-1][..., -1])
+        #tf.print("added", y2[-1])
+
+    dropout = 0.05
+    wh_var = 1
+    xy_var = 1
+    return (x, ) + tuple(y2)
 
 
 # https://github.com/tensorflow/models/blob/master/research/object_detection/g3doc/using_your_own_dataset.md#conversion-script-outline-conversion-script-outline
