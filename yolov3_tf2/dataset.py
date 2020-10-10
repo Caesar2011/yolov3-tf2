@@ -103,25 +103,31 @@ def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
         anchors = tf.constant(anchors)
         # 2. transform all true outputs
         # y_elem: (batch_size, grid_y, grid_x, anchors, (x1, y1, x2, y2, obj, cls))
-        #tf.print(y_elem.shape)
         true_box, true_obj, true_class_idx = tf.split(
             y_elem, (4, 1, 1), axis=-1)
-        #tf.print(true_box.shape, true_obj.shape)
+        condition = tf.math.greater(true_obj, 0)
+
         true_xy = (true_box[..., 0:2] + true_box[..., 2:4]) / 2
-        #tf.print("rev sig 0", true_xy)
         true_wh = true_box[..., 2:4] - true_box[..., 0:2]
+
+        # modify data to model the previous step
+        # xy more centered / wh smaller / condition dropout
+        shape = tf.shape(true_xy)
+        shape = tf.concat((shape[0:1], tf.ones((tf.size(shape)-1, ), dtype="int32")), axis=0)
+        movement = tf.reshape(tf.random.normal(shape=(shape[0], ), mean=0.98, stddev=0.02), shape)
+
+        true_xy = (true_xy-0.5)*movement + 0.5
+        true_wh = true_wh * movement
+        condition = tf.math.logical_xor(condition, tf.random.uniform(tf.shape(condition)) > 0.95)
 
         # 3b. inverting the pred box equations
         true_wh = tf.math.log(true_wh / anchors)
         true_wh = tf.where(tf.math.is_inf(true_wh),
                            tf.ones_like(true_wh) * -20, true_wh)
 
-        condition = tf.math.greater(true_obj, 0)
         shape = tf.shape(true_wh[..., 0])
         normal_w = tf.random.normal(shape=shape, mean=-1.0, stddev=0.4)
         normal_h = tf.random.normal(shape=shape, mean=6.55533592e-02, stddev=2.29207946e-01)
-        #tf.print("bool", tf.boolean_mask(true_wh, condition))
-        #tf.print("bool", true_wh)
         true_wh = tf.where(condition, true_wh, tf.stack((normal_w, normal_h), axis=-1))
 
         # Reverse sigmoid of yolo_boxes to be equal with pred_xy
@@ -131,14 +137,7 @@ def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
 
         classes_one_hot = tf.one_hot(tf.cast(true_class_idx, dtype=tf.int32), classes)
         classes_one_hot = tf.squeeze(classes_one_hot, axis=-2)
-        if classes == 1:
-            classes_one_hot = classes_one_hot * 0.1
-        #tf.print(classes)
-        #tf.print("classes_one_hot", classes_one_hot.shape, classes_one_hot)
-        #tf.print("true_xy", tf.reduce_any(tf.math.is_nan(true_xy)), tf.reduce_any(tf.math.is_inf(true_xy)))
-        #tf.print("true_wh", tf.reduce_any(tf.math.is_nan(true_wh)), tf.reduce_any(tf.math.is_inf(true_wh)))
-        #tf.print("true_obj", tf.reduce_any(tf.math.is_nan(true_obj)), tf.reduce_any(tf.math.is_inf(true_obj)))
-        #tf.print("classes_one_hot", tf.reduce_any(tf.math.is_nan(classes_one_hot)), tf.reduce_any(tf.math.is_inf(classes_one_hot)))
+        classes_one_hot = classes_one_hot * 0.9
 
         # y_pred: (batch_size, grid_y, grid_x, anchors, (x, y, w, h, obj, ...cls))
         y2.append(tf.concat((
@@ -147,12 +146,7 @@ def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
             true_obj,
             classes_one_hot
         ), axis=-1))
-        #tf.print("added", y2[-1][..., -1])
-        #tf.print("added", y2[-1])
 
-    dropout = 0.05
-    wh_var = 1
-    xy_var = 1
     return (x, ) + tuple(y2)
 
 

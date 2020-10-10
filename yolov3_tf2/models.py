@@ -7,6 +7,7 @@ from tensorflow.keras.layers import (
     Add,
     Concatenate,
     Conv2D,
+    ConvLSTM2D,
     Input,
     Lambda,
     LeakyReLU,
@@ -40,15 +41,21 @@ yolo_tiny_anchors = np.array([(10, 14), (23, 27), (37, 58),
 yolo_tiny_anchor_masks = np.array([[3, 4, 5], [0, 1, 2]])
 
 
-def DarknetConv(x, filters, size, strides=1, batch_norm=True):
+def DarknetConv(x, filters, size, strides=1, batch_norm=True, recurrent=False, return_sequences=False):
     if strides == 1:
         padding = 'same'
     else:
         x = ZeroPadding2D(((1, 0), (1, 0)))(x)  # top left half-padding
         padding = 'valid'
-    x = Conv2D(filters=filters, kernel_size=size,
-               strides=strides, padding=padding,
-               use_bias=not batch_norm, kernel_regularizer=l2(0.0005))(x)
+    if recurrent:
+        x = ConvLSTM2D(filters=filters, kernel_size=size,
+                   strides=strides, padding=padding,
+                   use_bias=not batch_norm, kernel_regularizer=l2(0.0005),
+                   return_sequences=return_sequences)(x)
+    else:
+        x = Conv2D(filters=filters, kernel_size=size,
+                   strides=strides, padding=padding,
+                   use_bias=not batch_norm, kernel_regularizer=l2(0.0005))(x)
     if batch_norm:
         x = BatchNormalization()(x)
         x = LeakyReLU(alpha=0.1)(x)
@@ -139,11 +146,11 @@ def YoloConvTiny(filters, name=None):
     return yolo_conv
 
 
-def YoloOutput(filters, anchors, classes, name=None):
+def YoloOutput(filters, anchors, classes, name=None, recurrent=False):
     def yolo_output(x_in):
         x = inputs = Input(x_in.shape[1:])
-        x = DarknetConv(x, filters * 2, 3)
-        x = DarknetConv(x, anchors * (classes + 5), 1, batch_norm=False)
+        x = DarknetConv(x, filters * 2, 3, recurrent=recurrent, return_sequences=True)
+        x = DarknetConv(x, anchors * (classes + 5), 1, batch_norm=False, recurrent=recurrent)
         x = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2],
                                             anchors, classes + 5)))(x)
         return tf.keras.Model(inputs, x, name=name)(x_in)
@@ -152,29 +159,18 @@ def YoloOutput(filters, anchors, classes, name=None):
 
 def YoloRecurrent(anchors, classes, name=None):
     def yolo_recurrent(x_in):
-        inputs = Input(x_in[0].shape[1:]), Input(x_in[1].shape[1:])
-        pre_output, prev_output = inputs
+        pre_output, prev_output = inputs = Input(x_in[0].shape[1:]), Input(x_in[1].shape[1:])
         filters = anchors * (classes + 5)
 
-        #tf.print("before", pre_output.shape, prev_output.shape)
         pre_output = BatchNormalization()(pre_output)
         prev_output = BatchNormalization()(prev_output)
         prev_output = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2],
                                             filters)))(prev_output)
         pre_output = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2],
                                             filters)))(pre_output)
-        #tf.print("after", pre_output.shape, prev_output.shape)
-        x = Lambda(lambda x: tf.concat(x, 3))((pre_output, prev_output))
-        #x = Lambda(lambda y: tf.stack(y, axis=-1))((pre_output, prev_output))
-        #tf.print("concat", x.shape)
-        #x = Dense(24)(x)
-        #x = BatchNormalization()(x)
-        #x = Dense(6)(x)
-        #x = Lambda(lambda y: tf.keras.backend.squeeze(y, axis=-1))(x)
-        x = YoloOutput(filters * 2, anchors, classes)(x)
-        #tf.print("output", x.shape)
-        #x = pre_output
-        #x = Dense(6)(x)
+        #x = Lambda(lambda x: tf.concat(x, 3))((pre_output, prev_output))
+        x = Lambda(lambda y: tf.stack(y, axis=1))((prev_output, pre_output))
+        x = YoloOutput(filters * 2, anchors, classes, recurrent=True)(x)
 
         return Model(inputs, x, name=name)(x_in)
     return yolo_recurrent
@@ -348,7 +344,7 @@ def YoloLoss(anchors, classes=80, ignore_thresh=0.5):
             tf.cast(grid, tf.float32)
         true_wh = tf.math.log(true_wh / anchors)
         true_wh = tf.where(tf.math.is_inf(true_wh),
-                           tf.zeros_like(true_wh), true_wh)
+                           tf.ones_like(true_wh) * -20, true_wh)
 
         # 4. calculate all masks
         obj_mask = tf.squeeze(true_obj, -1)
