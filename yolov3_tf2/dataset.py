@@ -111,14 +111,14 @@ def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
         true_wh = true_box[..., 2:4] - true_box[..., 0:2]
 
         # modify data to model the previous step
-        # xy more centered / wh smaller / condition dropout
+        # xy more centered / wh smaller / --condition dropout--
         shape = tf.shape(true_xy)
         shape = tf.concat((shape[0:1], tf.ones((tf.size(shape)-1, ), dtype="int32")), axis=0)
-        movement = tf.reshape(tf.random.normal(shape=(shape[0], ), mean=0.98, stddev=0.02), shape)
+        movement = tf.reshape(tf.random.normal(shape=(shape[0], ), mean=0.98, stddev=0.01), shape)
 
         true_xy = (true_xy-0.5)*movement + 0.5
         true_wh = true_wh * movement
-        condition = tf.math.logical_xor(condition, tf.random.uniform(tf.shape(condition)) > 0.95)
+        #condition = tf.math.logical_xor(condition, tf.random.uniform(tf.shape(condition)) > 0.95)
 
         # 3b. inverting the pred box equations
         true_wh = tf.math.log(true_wh / anchors)

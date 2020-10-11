@@ -106,7 +106,7 @@ def DarknetTiny(name=None):
     return tf.keras.Model(inputs, (x_8, x), name=name)
 
 
-def YoloConv(filters, name=None):
+def YoloConv(filters, name=None, recurrent=False):
     def yolo_conv(x_in):
         if isinstance(x_in, tuple):
             inputs = Input(x_in[0].shape[1:]), Input(x_in[1].shape[1:])
@@ -119,11 +119,11 @@ def YoloConv(filters, name=None):
         else:
             x = inputs = Input(x_in.shape[1:])
 
-        x = DarknetConv(x, filters, 1)
-        x = DarknetConv(x, filters * 2, 3)
-        x = DarknetConv(x, filters, 1)
-        x = DarknetConv(x, filters * 2, 3)
-        x = DarknetConv(x, filters, 1)
+        x = DarknetConv(x, filters, 1, recurrent=recurrent, return_sequences=True)
+        x = DarknetConv(x, filters * 2, 3, recurrent=recurrent, return_sequences=True)
+        x = DarknetConv(x, filters, 1, recurrent=recurrent, return_sequences=True)
+        x = DarknetConv(x, filters * 2, 3, recurrent=recurrent, return_sequences=True)
+        x = DarknetConv(x, filters, 1, recurrent=recurrent, return_sequences=True)
         return Model(inputs, x, name=name)(x_in)
     return yolo_conv
 
@@ -170,6 +170,7 @@ def YoloRecurrent(anchors, classes, name=None):
                                             filters)))(pre_output)
         #x = Lambda(lambda x: tf.concat(x, 3))((pre_output, prev_output))
         x = Lambda(lambda y: tf.stack(y, axis=1))((prev_output, pre_output))
+        x = YoloConv(filters * 2, recurrent=True)(x)
         x = YoloOutput(filters * 2, anchors, classes, recurrent=True)(x)
 
         return Model(inputs, x, name=name)(x_in)
