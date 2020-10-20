@@ -139,7 +139,7 @@ def get_recurrect_inputs(x, y, anchors_list, anchor_masks, classes):
         classes_one_hot = tf.squeeze(classes_one_hot, axis=-2)
         classes_one_hot = classes_one_hot * 0.9
 
-        # y_pred: (batch_size, grid_y, grid_x, anchors, (x, y, w, h, obj, ...cls))
+        # y_pred: 3x (batch_size, grid_y, grid_x, (x, y, w, h, obj, ...cls))
         y2.append(tf.concat((
             true_xy,
             true_wh,
@@ -192,6 +192,42 @@ def parse_tfrecord(tfrecord, class_table, size=None):
     poses = tf.sparse.to_dense(
         x['image/object/view'], default_value='')
     specs = tf.stack([poses], axis=1)
+
+    y_train = tf.boolean_mask(y_train,
+        tf.equal(specs[:, 0], "Frontal")
+    )
+
+    paddings = [[0, FLAGS.yolo_max_boxes - tf.shape(y_train)[0]], [0, 0]]
+    y_train = tf.pad(y_train, paddings)
+
+    return x_train, y_train
+
+def transform_recurrent_images(tfrecord, class_table, size, anchors_list, anchor_masks, classes):
+    # size is a tuple (height, width)
+    if size is None:
+        size = (416, 416)
+    IMAGE_FEATURE_MAP['image/object/counts_per_frame'] = tf.io.VarLenFeature([], tf.int64)
+    x = tf.io.parse_single_example(tfrecord, IMAGE_FEATURE_MAP)
+    x_train = tf.image.decode_jpeg(x['image/encoded'], channels=3)
+    x_train = tf.image.resize(x_train, size)
+
+    class_text = tf.sparse.to_dense(
+        x['image/object/class/text'], default_value='')
+    labels = tf.cast(class_table.lookup(class_text), tf.float32)
+    y_train = tf.stack([tf.sparse.to_dense(x['image/object/bbox/xmin']),
+                        tf.sparse.to_dense(x['image/object/bbox/ymin']),
+                        tf.sparse.to_dense(x['image/object/bbox/xmax']),
+                        tf.sparse.to_dense(x['image/object/bbox/ymax']),
+                        labels], axis=1)
+
+    poses = tf.sparse.to_dense(
+        x['image/object/view'], default_value='')
+    specs = tf.stack([poses], axis=1)
+
+    counts_per_frame = tf.sparse.to_dense(
+        x['image/object/counts_per_frame'], default_value='')
+    counts_per_frame = tf.stack([counts_per_frame], axis=1)
+    tf.print(counts_per_frame.shape)
 
     y_train = tf.boolean_mask(y_train,
         tf.equal(specs[:, 0], "Frontal")
